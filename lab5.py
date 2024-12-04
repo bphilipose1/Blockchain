@@ -14,8 +14,6 @@ BPORT = 8333
 SU_ID = 4140754
 TARGET_BLOCK = SU_ID % 10000
 
-'''-------------------------------------------------------------------------------------------------------------'''
-
 def compactsize_t(n):
     if n < 252:
         return uint8_t(n)
@@ -24,7 +22,6 @@ def compactsize_t(n):
     if n < 0xffffffff:
         return uint8_t(0xfe) + uint32_t(n)
     return uint8_t(0xff) + uint64_t(n)
-
 
 def unmarshal_compactsize(b):
     key = b[0]
@@ -36,51 +33,39 @@ def unmarshal_compactsize(b):
         return b[0:3], unmarshal_uint(b[1:3])
     return b[0:1], unmarshal_uint(b[0:1])
 
-
 def bool_t(flag):
     return uint8_t(1 if flag else 0)
-
 
 def ipv6_from_ipv4(ipv4_str):
     pchIPv4 = bytearray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff])
     return pchIPv4 + bytearray((int(x) for x in ipv4_str.split('.')))
 
-
 def ipv6_to_ipv4(ipv6):
     return '.'.join([str(b) for b in ipv6[12:]])
-
 
 def uint8_t(n):
     return int(n).to_bytes(1, byteorder='little', signed=False)
 
-
 def uint16_t(n, byteorder='little'):
     return int(n).to_bytes(2, byteorder=byteorder, signed=False)
-
 
 def int32_t(n):
     return int(n).to_bytes(4, byteorder='little', signed=True)
 
-
 def uint32_t(n):
     return int(n).to_bytes(4, byteorder='little', signed=False)
-
 
 def int64_t(n):
     return int(n).to_bytes(8, byteorder='little', signed=True)
 
-
 def uint64_t(n):
     return int(n).to_bytes(8, byteorder='little', signed=False)
-
 
 def unmarshal_int(b):
     return int.from_bytes(b, byteorder='little', signed=True)
 
-
 def unmarshal_uint(b, byteorder='little'):
     return int.from_bytes(b, byteorder=byteorder, signed=False)
-
 
 def print_message(msg, text=None):
     """
@@ -96,7 +81,6 @@ def print_message(msg, text=None):
         print_version_msg(payload)
     # FIXME print out the payloads of other types of messages, too
     return command
-
 
 def print_version_msg(b):
     """
@@ -137,7 +121,6 @@ def print_version_msg(b):
     if len(extra) > 0:
         print('{}{:32} EXTRA!!'.format(prefix, extra.hex()))
 
-
 def print_header(header, expected_cksum=None):
     """
     Report the contents of the given bitcoin message header
@@ -164,25 +147,38 @@ def print_header(header, expected_cksum=None):
     print('{}{:32} checksum {}'.format(prefix, cksum.hex(), verified))
     return command
 
-
-'''-------------------------------------------------------------------------------------------------------------'''
-
 def checksum(payload):
-    """
-    Calculate the checksum of the given payload
-    :param payload: payload to checksum
-    :return: checksum
+    """Get the checksum from the payload.
+
+    Args:
+        payload (bytes): The payload data
+
+    Returns:
+        bytes: the checksum
     """
     return hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
 
 def create_message(command, payload=b""):
-    command_bytes = command.encode('utf-8').ljust(12, b'\x00')  # Ensure 12 bytes
+    """Create a bitcoin message
+
+    Args:
+        command (str): The command
+        payload (bytes, optional): _description_. Defaults to b"".
+
+    Returns:
+        bytes: the final bitcoin message to send
+    """
+    command_bytes = command.encode('utf-8').ljust(12, b'\x00')  # Ensure 12 bytes, append 0 if needed on the right
     payload_length = len(payload)
     ret_checksum = checksum(payload)
     return MAGIC_BYTES + command_bytes + int32_t(payload_length) + ret_checksum + payload
  
 def version_message():
-    """Craft a version message."""
+    """Build a version payload
+
+    Returns:
+        bytes: the built version payload
+    """
     version = uint32_t(VERSION)
     services = uint64_t(0)
     timestamp = uint64_t(int(time.time()))
@@ -190,13 +186,13 @@ def version_message():
     addr_recv_ip = ipv6_from_ipv4(BHOST)
     addr_recv_port = uint16_t(BPORT)
     addr_trans_services = uint64_t(1)
-    cur_ip = socket.gethostbyname(socket.gethostname())  # Get current IP
+    cur_ip = socket.gethostbyname(socket.gethostname()) #relay IP address
     addr_trans_ip = ipv6_from_ipv4(cur_ip)
     addr_trans_port = uint16_t(PORT)
     nonce = uint64_t(0)
-    user_agent = uint8_t(0)  # Empty user agent
+    user_agent = uint8_t(0) #empty user agent
     start_height = uint32_t(0)
-    relay = uint8_t(0)  # Relay transactions off
+    relay = uint8_t(0)  #disable transaction relay
 
     payload = (
         version +
@@ -212,129 +208,102 @@ def version_message():
     return payload
 
 def connect_to_node(ip, port):
-    """Connect to a Bitcoin node and return the socket."""
+    """initialize a connection to a bitcoin node
+
+    Args:
+        ip (str): the IP address of the node
+        port (int): the port of the target node
+
+    Returns:
+        socket: the setup socket object
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, port))
     print(f"Connected to node {ip}:{port}")
     return sock
 
 def recv_all(sock, size):
+    """get the data from the socket
+
+    Args:
+        sock (socket): the socket object
+        size (int): the expected size of the data to receive
+
+    Raises:
+        ConnectionError: if the connection is broken
+
+    Returns:
+        bytes: the received data
+    """
     data = b""
     while len(data) < size:
-        part = sock.recv(size - len(data))
+        part = sock.recv(min(4096, size - len(data))) #read up to 4096 bytes
         if not part:
             raise ConnectionError("Socket connection broken")
         data += part
     return data
 
 def get_getblocks_message(starting_hash, stop_hash=bytearray(32)):
+    """build the getblocks bitcoin message
+
+    Args:
+        starting_hash (bytes): the hash of the block to request from
+        stop_hash (bytes, optional): the hash of the final block in case to request more blocks. Defaults to bytearray(32).
+    Returns:
+        bytes: the built getblocks message
     """
-    Create a getblocks message payload to request block headers starting from a specific hash.
-    :param starting_hash: The hash of the block to start fetching from (32 bytes).
-    :param stop_hash: The hash to stop fetching at (default: all zeroes).
-    :return: Serialized getblocks message payload.
-    """
-    version = uint32_t(VERSION)  # Protocol version
-    hash_count = compactsize_t(1)  # Number of hashes (starting point only)
+    version = uint32_t(VERSION)  #protocol version
+    hash_count = compactsize_t(1)  #amount of hashes
     return version + hash_count + starting_hash + stop_hash
 
-
 def parse_inv_message(payload):
-    """
-    Parse an 'inv' message payload and extract inventory items.
+    """parse the inventory message
+    Args:
+        payload (bytes): the payload data
+
+    Returns:
+        list: the list of inventory items
     """
     offset = 0
-
-    # Extract count (compactSize uint)
     count_bytes, count = unmarshal_compactsize(payload)
     offset += len(count_bytes)
 
     print(f"Inventory count: {count}")
 
     inventory = []
-    for _ in range(count):
-        # Each inventory entry is 36 bytes: 4 bytes for type, 32 bytes for hash
-        type_id = unmarshal_uint(payload[offset:offset + 4])
+    for _ in range(count): #parse each inventory item
+        type_id = unmarshal_uint(payload[offset:offset + 4]) #get invetory type
         hash_value = payload[offset + 4:offset + 36]
-        inventory.append((type_id, hash_value.hex()))
-        offset += 36
-
+        inventory.append((type_id, hash_value.hex())) #
+        offset += 36 #update count to the next 36 bit inventory item in the payload
     return inventory
 
-
 def create_getdata_message(block_hash):
-    payload = struct.pack("<I", 1)  # Number of inventory items
-    payload += struct.pack("<I", 0x02)  # MSG_BLOCK type
-    payload += block_hash[::-1]  # Block hash (little-endian)
-    return payload
+    """build the getdata message
 
+    Args:
+        block_hash (bytes): the hash of the block to request its data/transactions from
 
+    Returns:
+        bytes: the built getdata message
+    """
+    count = compactsize_t(1)  #how many hashes
+    type_id = uint32_t(2)  #blocks type
+    return count + type_id + block_hash
 
-def main():
-    """Main function to exchange version and verack messages."""
-    try:
-        #connect to the Bitcoin node
-        sock = connect_to_node(BHOST, BPORT)
-        sock.settimeout(10)
+def find_target_block(sock):
+    """find the target block from the P2P bitcoin network
 
-        #Step 1: Send the version message
-        v_message = version_message()
-        v_packet = create_message("version", v_message)
-        sock.sendall(v_packet)
-        print_message(v_packet, "sending")
+    Args:
+        sock (socket): the socket object
 
-        # Step 2: Receive and handle the version response
-        response = recv_all(sock, HDR_SZ + 111)  # Header + estimated payload size
-        print_message(response, "received")
-
-        # Step 3: Send the verack message
-        verack_packet = create_message("verack")
-        sock.sendall(verack_packet)
-        print_message(verack_packet, "sending")
-
-        # Step 4: Receive and handle the verack response
-        response = recv_all(sock, HDR_SZ)  # Verack has no payload
-        print_message(response, "recieved")
-        
-        # Step 5: Handle additional messages (e.g., ping, sendheaders, sendcmpct)
-        while True:
-            try:
-                # Receive and process header
-                response = recv_all(sock, HDR_SZ)
-                payload_size = unmarshal_uint(response[16:20])
-                response += recv_all(sock, payload_size)
-                command = print_message(response, "received")
-
-                # Handle specific messages
-                if command == "ping":
-                    #sending pong message to keep the P2P alive
-                    nonce = response[HDR_SZ:HDR_SZ + 8]
-                    pong_message = create_message("pong", nonce)
-                    sock.sendall(pong_message)
-                    print_message(pong_message, "sending")
-                elif command == "addr":
-                    print("Received peer addresses")
-                elif command == "feefilter":
-                    print("Received feefilter message")
-                    break
-                else:
-                    print(f"Unhandled command: {command}")
-
-            except socket.timeout:
-                print("Timeout reached, no more messages.")
-                break
-            except socket.error as e:
-                print(f"Socket error: {e}")
-                break
-
-            
-        # Step 5: Send getblocks message
-        print('step5\n\n\n\n\n\n\n\n\n\n\n\n')
-        last_hash = bytearray(32)  # Genesis block hash (all zeroes)
-        block_inventory = []
-        found = False
-
-        while not found:
+    Returns:
+        list: the list of blocks that will contain the target block
+    """
+    last_hash = bytearray(32)  #Obtain the last hash from the Bitcoin network which is all 0s
+    block_inventory = []
+    found = False
+    while not found:
             print('Requesting more blocks...')
             getblocks_payload = get_getblocks_message(last_hash)  # Request blocks starting from last_hash
             getblocks_packet = create_message("getblocks", getblocks_payload)
@@ -361,37 +330,243 @@ def main():
                 break
             else:
                 print(f'Not found yet, current inventory size: {len(block_inventory)}')
+    
+    return block_inventory
+
+def handle_incoming_messages(sock):
+    """Handle incoming messages from the bitcoin node after the version and verack messages
+
+    Args:
+        sock (socket): the socket object
+    """
+    while True:
+        try:
+            #process header to derive incoming payload size
+            response = recv_all(sock, HDR_SZ) 
+            payload_size = unmarshal_uint(response[16:20]) 
+            response += recv_all(sock, payload_size) 
+            command = print_message(response, "received") 
+            
+            #message handler
+            if command == "ping":
+                #sending back pong message to keep the P2P connection alive
+                nonce = response[HDR_SZ:HDR_SZ + 8]  
+                pong_message = create_message("pong", nonce) 
+                sock.sendall(pong_message)
+                print_message(pong_message, "sending")
+            elif command == "addr":
+                print("Received peer addresses")
+            elif command == "feefilter":
+                print("Received feefilter message")
+                break  #Can stop dealing with incoming messages after this
+            else:
+                print(f"Got unknown command: {command}")
+
+        except socket.timeout:
+            print("Timeout Exceeded")
+            break
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            break
+
+def parse_block_message(payload):
+    """Parse the block message
+
+    Args:
+        payload (bytes): the payload data
+
+    Returns:
+        dict: the parsed block message
+    """
+    #separate the block header and its payload
+    block_header = payload[:80]
+    payload = payload[80:]
+    
+    trans_count_bytes, trans_count = unmarshal_compactsize(payload) 
+    payload = payload[len(trans_count_bytes):] #remove the transaction count from the payload
+    
+    #extract the transactions
+    transactions = []
+    for _ in range(trans_count):
+        trans_bytes, temp_trans = parse_transaction(payload)
+        transactions.append(temp_trans)
+        payload = payload[len(trans_bytes):]
+    
+    return {
+        "header": block_header,
+        "count": trans_count,
+        "transactions": transactions
+    }
+
+def parse_transaction(payload):
+    """Parse the transaction message
+
+    Args:
+        payload (bytes): the payload data
+        
+    Returns:
+        bytes: the parsed transaction in hexidecimal format
+    """
+    trans_len = len(payload)  # Adjust as per Bitcoin's transaction serialization rules
+    temp_trans = payload[:trans_len]
+    return temp_trans, {"raw": temp_trans.hex()}
+
+def modify_transaction(transaction):
+    """modify the transaction by adding the first byte by 1
+
+    Args:
+        transaction (bytes): the transaction data
+
+    Returns:
+        bytes: the modified transaction data
+    """
+    #Change the first byte of the transaction
+    modified_transactions = bytearray(transaction) #convert to bytearray to modify
+    modified_transactions[0] = (modified_transactions[0] + 1) % 256 #do % 256 to keep it in the range of 0-255
+    return modified_transactions
+
+def compute_merkle_root(transactions):
+    """compute the Merkle root from the input transactions
+
+    Args:
+        transactions (list): the list of transactions
+
+    Returns:
+        bytes: the computed merkle root
+    """
+    hashes = [hashlib.sha256(transaction).digest() for transaction in transactions] #convert each transaction into its SHA256 hash
+    while len(hashes) > 1: #until we have the root
+        if len(hashes) % 2 != 0: #if the number of hashes is odd, duplicate the last one
+            hashes.append(hashes[-1]) #append the last hash to the list
+        
+        hashes = [hashlib.sha256(hashes[i] + hashes[i + 1]).digest() for i in range(0, len(hashes), 2)] #combine the hashes in pairs
+    return hashes[0] #return the root
+
+def update_block_header(block_header, new_merkle_root):
+    """update the block header with the new input merkle root
+
+    Args:
+        block_header (_type_): _description_
+        new_merkle_root (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    updated_header = block_header[:36] + new_merkle_root + block_header[68:] #replace the Merkle root in the block header
+    return updated_header
+
+def simulate_rejection(block_header, original_merkle_root, new_merkle_root, difficulty_target):
+    """simulate the rejection of a modified block from the bitcoin P2P network
+
+    Args:
+        block_header (bytes): the block header
+        original_merkle_root (bytes): the original merkle root
+        new_merkle_root (bytes): the new merkle root
+        difficulty_target (bytes): the difficulty target
+    """
+    block_hash = hashlib.sha256(hashlib.sha256(block_header).digest()).digest()[::-1]
+    print(f"New Block Hash: {block_hash.hex()}")
+    
+    #Case 1: Check if the Merkle root is still the same
+    if original_merkle_root != new_merkle_root:
+        print("Work Rejected: Invalid Merkle root, it should be matching the block header.")
+    
+    #Case 2: Check if the block hash still meets the difficulty target
+    target_value = int.from_bytes(difficulty_target, byteorder='big')
+    block_hash_value = int.from_bytes(block_hash, byteorder='big')
+    
+    if block_hash_value > target_value:
+        print("Work Rejected: Proof-of-work invalid. The block hash does not meet the difficulty target.")
+    else:
+        print("Work is accepted and is valid.")
+
+
+def main():
+    """Main function to connect to the bitoin node in a P2P network and simulate the rejection of a modified block"""
+    try:
+        #connect to the Bitcoin node
+        sock = connect_to_node(BHOST, BPORT)
+        sock.settimeout(10)
+
+        #Step 1: send the version message
+        v_message = version_message()
+        v_packet = create_message("version", v_message)
+        sock.sendall(v_packet)
+        print_message(v_packet, "sending")
+
+        #Step 2: receive and handle the version response
+        response = recv_all(sock, HDR_SZ)  #Get the header first
+        payload_size = unmarshal_uint(response[16:20])
+        response += recv_all(sock, payload_size) 
+        print_message(response, "received")
+        
+        #Step 3: send the verack message
+        verack_packet = create_message("verack")
+        sock.sendall(verack_packet)
+        print_message(verack_packet, "sending")
+
+        # Step 4: receive and handle the verack response
+        response = recv_all(sock, HDR_SZ)  # Verack has no payload
+        print_message(response, "received")
+        
+        
+        # Step 5: Handle additional messages that would be sent after (e.g., ping, sendheaders, sendcmpct)
+        handle_incoming_messages(sock)
+            
+        # Step 5: Send getblocks message
+        block_inventory = find_target_block(sock)
+        
 
         #print out target block from the inventory
         print(f'Inventory: {len(block_inventory)}')
         print(f"Target block ({TARGET_BLOCK}): {block_inventory[TARGET_BLOCK - 1]}")
 
-
         # Step 6: Request the full block with getdata message
-        block_hash = bytes.fromhex(block_inventory[TARGET_BLOCK - 1][1])
-        getdata_payload = create_getdata_message(block_hash)
-        getdata_packet = create_message("getdata", getdata_payload)
+        block_hash = bytearray.fromhex(block_inventory[TARGET_BLOCK - 1][1])
+        getdata_message = create_getdata_message(block_hash) #Create getdata message
+        getdata_packet = create_message("getdata", getdata_message)
         sock.sendall(getdata_packet)
         print_message(getdata_packet, "sending")
-
-        # Step 7: Receive the block message
-        sock.settimeout(30)
-        response = recv_all(sock, HDR_SZ)  # Header first
+        
+        # Step 7: Receive block response
+        response = recv_all(sock, HDR_SZ)  # Receive header first
         payload_size = unmarshal_uint(response[16:20])
-        response += recv_all(sock, payload_size)  # Receive the rest of the block message
+        response += recv_all(sock, payload_size)  # Receive the rest of the payload
+        
         print_message(response, "received")
+        
+        # Parse the block transaction message and print the transactions
+        print("\n\nParsing block transaction message...")
+        parsed_block = parse_block_message(response[HDR_SZ:])
+        print(f"Parsed Block: \nNumber Of Transactions in Block #{TARGET_BLOCK}: {parsed_block['count']}")
+        for tx in parsed_block["transactions"]:
+            print(f"Transaction: {tx['raw']}")
+            
+        print('\n\n')
 
-        # Step 8: Parse and display the transactions in the block
-        transactions = parse_block_message(response[HDR_SZ:])
-        print(f"Transactions in block {TARGET_BLOCK}:")
-        for tx_idx, tx in enumerate(transactions):
-            print(f"Transaction {tx_idx + 1}: {tx}")
+        #Modify the first transaction by incrementing the first byte by 1
+        transactions = [bytearray.fromhex(tx["raw"]) for tx in parsed_block["transactions"]]
+        modified_tx = modify_transaction(transactions[0])  # Modify the first transaction
+        transactions[0] = modified_tx
+
+        #Update/Recompute the Merkle root
+        new_merkle_root = compute_merkle_root(transactions)
+        print(f"New Merkle Root: {new_merkle_root.hex()}")
+
+        #Update the block header with the new Merkle root to simulate a modified block
+        updated_header = update_block_header(parsed_block["header"], new_merkle_root)
+
+        #Simulate how the Bitcoin P2P network would reject the modified block
+        simulate_rejection(updated_header, parsed_block["header"][36:68], new_merkle_root, parsed_block["header"][68:72])
 
         # Close the connection
         sock.close()
         print("Connection successfully closed")
+        
     except (socket.error, socket.timeout) as e:
         print(f"Failed to connect or exchange messages: {e}")
+
+
 
 if __name__ == "__main__":
     main()
