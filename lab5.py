@@ -1,6 +1,10 @@
+"""
+CPSC 5520, Seattle University
+:Authors: Benjamin Philipose
+:Version: f24-01
+"""
 import socket
-import hashlib
-import struct
+import hashlib 
 import time
 
 
@@ -509,14 +513,12 @@ def main():
         response = recv_all(sock, HDR_SZ)  # Verack has no payload
         print_message(response, "received")
         
-        
         # Step 5: Handle additional messages that would be sent after (e.g., ping, sendheaders, sendcmpct)
         handle_incoming_messages(sock)
             
         # Step 5: Send getblocks message
         block_inventory = find_target_block(sock)
         
-
         #print out target block from the inventory
         print(f'Inventory: {len(block_inventory)}')
         print(f"Target block ({TARGET_BLOCK}): {block_inventory[TARGET_BLOCK - 1]}")
