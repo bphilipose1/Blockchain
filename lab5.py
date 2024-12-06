@@ -1,14 +1,18 @@
+"""
+CPSC 5520, Seattle University
+:Authors: Benjamin Philipose
+:Version: f24-01
+"""
 import socket
-import hashlib
-import struct
+import hashlib 
 import time
 
 
 # Constants
-MAGIC_BYTES = bytearray.fromhex("f9beb4d9")  # Mainnet magic bytes
-HDR_SZ = 24  # Bitcoin message header size
-PORT = 8333  # Default Bitcoin port
-VERSION = 70015  # Protocol version
+MAGIC_BYTES = bytearray.fromhex("f9beb4d9")  #magic bytes
+HDR_SZ = 24  #bitcoin header size
+PORT = 8333  #Bitcoin port
+VERSION = 70015  #Protocal version
 BHOST = '5.14.1.135'
 BPORT = 8333
 SU_ID = 4140754
@@ -303,8 +307,9 @@ def find_target_block(sock):
     last_hash = bytearray(32)  #Obtain the last hash from the Bitcoin network which is all 0s
     block_inventory = []
     found = False
+    print(f'Requesting more blocks from starting block hash of 32 0\'s...')
     while not found:
-            print('Requesting more blocks...')
+            
             getblocks_payload = get_getblocks_message(last_hash)  # Request blocks starting from last_hash
             getblocks_packet = create_message("getblocks", getblocks_payload)
             sock.sendall(getblocks_packet)
@@ -329,7 +334,14 @@ def find_target_block(sock):
                 found = True
                 break
             else:
+                last_hash = bytearray.fromhex(inventory[-1][1])  # Get the last hash from the inventory
                 print(f'Not found yet, current inventory size: {len(block_inventory)}')
+                
+                #undo little endian
+                temp_hash = inventory[-1][1]
+                #flip every 2 characters
+                littleendian = convert_endian(temp_hash)
+                print(f"Getting more blocks from hash (converted to big-endian format): {littleendian}")
     
     return block_inventory
 
@@ -378,24 +390,49 @@ def parse_block_message(payload):
     Returns:
         dict: the parsed block message
     """
-    #separate the block header and its payload
+    #separate the block header and its payload   
     block_header = payload[:80]
+    #get the block header version
+    version = unmarshal_uint(block_header[:4])
+    #get the previous block hash
+    prev_block_hash = block_header[4:36][::-1].hex()  # Reverse for little-endian
+    #get the Merkle root
+    merkle_root = block_header[36:68][::-1].hex()  # Reverse for little-endian
+    #get the timestamp
+    timestamp = unmarshal_uint(block_header[68:72])
+    #get nBits
+    difficulty_target = block_header[72:76]
+    #get the nonce
+    nonce = unmarshal_uint(block_header[76:80])
+    print(f"Block Header: \nVersion: {version}\nPrevious Block Hash: {prev_block_hash}\nMerkle Root: {merkle_root}\nTimestamp: {timestamp}\nDifficulty Target: {difficulty_target.hex()}\nNonce: {nonce}")
     payload = payload[80:]
     
     trans_count_bytes, trans_count = unmarshal_compactsize(payload) 
     payload = payload[len(trans_count_bytes):] #remove the transaction count from the payload
     
-    #extract the transactions
+    # Extract the transactions
     transactions = []
-    for _ in range(trans_count):
-        trans_bytes, temp_trans = parse_transaction(payload)
-        transactions.append(temp_trans)
+    for i in range(trans_count):
+        trans_bytes, transaction_details = parse_transaction(payload)
+        transactions.append(transaction_details)
         payload = payload[len(trans_bytes):]
-    
+
+        # Print each transaction
+        print(f"\nTransaction #{i + 1}:")
+        print(f"TXID: {transaction_details['txid']}")
+        print(f"Version: {transaction_details['version']}")
+        print(f"Number of Inputs: {len(transaction_details['inputs'])}")
+        for j, tx_input in enumerate(transaction_details['inputs']):
+            print(f"  Input #{j + 1}: Previous TXID {tx_input['prev_txid']}\n\t\tNSEQUENCE: {hex(tx_input['sequence'])}")
+        print(f"Number of Outputs: {len(transaction_details['outputs'])}")
+        for k, tx_output in enumerate(transaction_details['outputs']):
+            print(f"  Output #{k + 1}: Value {tx_output['value']} satoshis ({tx_output['value']/100000000} BTC)\n\t\tSCRIPTPUBKEY (HEX): {tx_output['script']}")
+        print(f"Locktime: {transaction_details['locktime']}")
+
     return {
         "header": block_header,
         "count": trans_count,
-        "transactions": transactions
+        "transactions": transactions,
     }
 
 def parse_transaction(payload):
@@ -405,11 +442,85 @@ def parse_transaction(payload):
         payload (bytes): the payload data
         
     Returns:
-        bytes: the parsed transaction in hexidecimal format
+        tuple: the raw transaction data and the parsed transaction
     """
-    trans_len = len(payload)  # Adjust as per Bitcoin's transaction serialization rules
-    temp_trans = payload[:trans_len]
-    return temp_trans, {"raw": temp_trans.hex()}
+    
+    offset = 0
+
+    #get the transaction version
+    version = unmarshal_uint(payload[offset:offset + 4])
+    offset += 4
+
+    #get the input count and extract the input transactions
+    input_count_bytes, input_count = unmarshal_compactsize(payload[offset:])
+    offset += len(input_count_bytes)
+
+    #iterate and parse each input transaction to store in a dict
+    inputs = []
+    for _ in range(input_count):
+        prev_txid = payload[offset:offset + 32][::-1].hex()  #convert to big-endian to match the website output
+        offset += 32
+        index = unmarshal_uint(payload[offset:offset + 4])
+        offset += 4
+
+        #extract script length and script
+        script_len_bytes, script_len = unmarshal_compactsize(payload[offset:])
+        offset += len(script_len_bytes)
+
+        script = payload[offset:offset + script_len].hex()
+        offset += script_len
+
+        #extract sequence
+        sequence = unmarshal_uint(payload[offset:offset + 4])
+        offset += 4
+
+        inputs.append({
+            "prev_txid": prev_txid,
+            "index": index,
+            "script": script,
+            "sequence": sequence
+        })
+
+    #now extract the output count
+    output_count_bytes, output_count = unmarshal_compactsize(payload[offset:])
+    offset += len(output_count_bytes)
+
+    #get the output transactions
+    outputs = []
+    for _ in range(output_count):
+        #extract value and script
+        value = unmarshal_uint(payload[offset:offset + 8])
+        offset += 8
+
+        script_len_bytes, script_len = unmarshal_compactsize(payload[offset:])
+        offset += len(script_len_bytes)
+
+        script = payload[offset:offset + script_len].hex()
+        offset += script_len
+
+        outputs.append({
+            "value": value,
+            "script": script
+        })
+
+    #extract locktime
+    locktime = unmarshal_uint(payload[offset:offset + 4])
+    offset += 4
+
+    #store the raw transaction data for later extra credit use
+    raw_transaction = payload[:offset]
+
+    # Compute transaction hash (TXID)
+    txid = hashlib.sha256(hashlib.sha256(raw_transaction).digest()).digest()[::-1].hex() #convert to big-endian to match the website output
+
+    return raw_transaction, {
+        "txid": txid,
+        "version": version,
+        "inputs": inputs,
+        "outputs": outputs,
+        "locktime": locktime,
+        "raw": raw_transaction.hex()
+    }
 
 def modify_transaction(transaction):
     """modify the transaction by adding the first byte by 1
@@ -421,8 +532,10 @@ def modify_transaction(transaction):
         bytes: the modified transaction data
     """
     #Change the first byte of the transaction
+    old_transaction = transaction
     modified_transactions = bytearray(transaction) #convert to bytearray to modify
     modified_transactions[0] = (modified_transactions[0] + 1) % 256 #do % 256 to keep it in the range of 0-255
+    print(f"\n\nFlipping First Transaction's First Bit\nOld Transaction: {old_transaction.hex()}\nModified Transaction: {modified_transactions.hex()}")
     return modified_transactions
 
 def compute_merkle_root(transactions):
@@ -439,7 +552,7 @@ def compute_merkle_root(transactions):
         if len(hashes) % 2 != 0: #if the number of hashes is odd, duplicate the last one
             hashes.append(hashes[-1]) #append the last hash to the list
         
-        hashes = [hashlib.sha256(hashes[i] + hashes[i + 1]).digest() for i in range(0, len(hashes), 2)] #combine the hashes in pairs
+        hashes = [hashlib.sha256(hashes[i] + hashes[i + 1]).digest() for i in range(0, len(hashes), 2)] #combine the hashes in pairs and hash them
     return hashes[0] #return the root
 
 def update_block_header(block_header, new_merkle_root):
@@ -465,7 +578,7 @@ def simulate_rejection(block_header, original_merkle_root, new_merkle_root, diff
         difficulty_target (bytes): the difficulty target
     """
     block_hash = hashlib.sha256(hashlib.sha256(block_header).digest()).digest()[::-1]
-    print(f"New Block Hash: {block_hash.hex()}")
+    print(f"New Block Hash: {block_hash[::-1].hex()}") #convert to big-endian to match the website output
     
     #Case 1: Check if the Merkle root is still the same
     if original_merkle_root != new_merkle_root:
@@ -480,6 +593,14 @@ def simulate_rejection(block_header, original_merkle_root, new_merkle_root, diff
     else:
         print("Work is accepted and is valid.")
 
+def convert_endian(hex_string):
+    
+    if len(hex_string) % 2 != 0:
+        raise ValueError("Hex string must have even len")
+
+    #flip endian
+    reversed_bytes = ''.join(reversed([hex_string[i:i+2] for i in range(0, len(hex_string), 2)]))
+    return reversed_bytes
 
 def main():
     """Main function to connect to the bitoin node in a P2P network and simulate the rejection of a modified block"""
@@ -509,55 +630,53 @@ def main():
         response = recv_all(sock, HDR_SZ)  # Verack has no payload
         print_message(response, "received")
         
-        
         # Step 5: Handle additional messages that would be sent after (e.g., ping, sendheaders, sendcmpct)
         handle_incoming_messages(sock)
             
-        # Step 5: Send getblocks message
+        # Step 6: Send getblocks message
         block_inventory = find_target_block(sock)
         
-
         #print out target block from the inventory
         print(f'Inventory: {len(block_inventory)}')
-        print(f"Target block ({TARGET_BLOCK}): {block_inventory[TARGET_BLOCK - 1]}")
+        print(f"Target block\'s ({TARGET_BLOCK}) hash converted to big endian for readability: {convert_endian(block_inventory[TARGET_BLOCK - 1][1])}")
 
-        # Step 6: Request the full block with getdata message
+        # Step 7: Request the full block with getdata message
         block_hash = bytearray.fromhex(block_inventory[TARGET_BLOCK - 1][1])
         getdata_message = create_getdata_message(block_hash) #Create getdata message
         getdata_packet = create_message("getdata", getdata_message)
         sock.sendall(getdata_packet)
         print_message(getdata_packet, "sending")
         
-        # Step 7: Receive block response
+        # Step 8: Receive block response
         response = recv_all(sock, HDR_SZ)  # Receive header first
         payload_size = unmarshal_uint(response[16:20])
         response += recv_all(sock, payload_size)  # Receive the rest of the payload
         
         print_message(response, "received")
         
-        # Parse the block transaction message and print the transactions
-        print("\n\nParsing block transaction message...")
+        # Step 9: Parse the block transaction message and print the transactions
+        print("\nTarget block...")
         parsed_block = parse_block_message(response[HDR_SZ:])
-        print(f"Parsed Block: \nNumber Of Transactions in Block #{TARGET_BLOCK}: {parsed_block['count']}")
-        for tx in parsed_block["transactions"]:
-            print(f"Transaction: {tx['raw']}")
-            
-        print('\n\n')
 
-        #Modify the first transaction by incrementing the first byte by 1
+        # Step 10: Modify the first transaction by incrementing the first hex byte by 1
         transactions = [bytearray.fromhex(tx["raw"]) for tx in parsed_block["transactions"]]
         modified_tx = modify_transaction(transactions[0])  # Modify the first transaction
         transactions[0] = modified_tx
 
-        #Update/Recompute the Merkle root
+        # Step 11: Update/Recompute the Merkle root
+        print(f"\n\nComputing new Merkle root for the modified block...")
         new_merkle_root = compute_merkle_root(transactions)
-        print(f"New Merkle Root: {new_merkle_root.hex()}")
+        print(f"\nOld Merkle Root: {parsed_block['header'][36:68][::-1].hex()}\nNew Merkle Root: {new_merkle_root[::-1].hex()} ")  # Reverse for little-endian to match website output
 
-        #Update the block header with the new Merkle root to simulate a modified block
+        # Step 12: Update the block header with the new Merkle root to simulate a modified block
         updated_header = update_block_header(parsed_block["header"], new_merkle_root)
 
-        #Simulate how the Bitcoin P2P network would reject the modified block
-        simulate_rejection(updated_header, parsed_block["header"][36:68], new_merkle_root, parsed_block["header"][68:72])
+        # Step 13: Simulate how the Bitcoin P2P network would reject the modified block
+        print("\n\nSimulating block rejection...")
+        old_merkle_root = parsed_block["header"][36:68]
+        old_difficulty_target = parsed_block["header"][72:76]
+        
+        simulate_rejection(updated_header, old_merkle_root, new_merkle_root, old_difficulty_target)
 
         # Close the connection
         sock.close()
